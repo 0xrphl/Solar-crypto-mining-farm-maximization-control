@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 340" font-family="Segoe UI,Arial,sans-serif">
+  <rect width="700" height="340" fill="#f8f9fa" rx="10"/>
+  <text x="350" y="22" text-anchor="middle" font-size="14" font-weight="700" fill="#222">🗄️ Database — ~6 MB/yr (80yr free tier)</text>
+  <!-- energy -->
+  <rect x="10" y="38" width="200" height="215" fill="#fff" rx="5" stroke="#3ecf8e" stroke-width="2"/>
+  <rect x="10" y="38" width="200" height="20" fill="#3ecf8e" rx="5"/>
+  <rect x="10" y="54" width="200" height="4" fill="#3ecf8e"/>
+  <text x="110" y="53" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">energy (288/day)</text>
+  <text x="16" y="72" font-size="8" fill="#333" font-family="monospace">ts   TIMESTAMPTZ</text>
+  <text x="16" y="85" font-size="8" fill="#da0" font-family="monospace">a1_w ☀Solar   a1_pf</text>
+  <text x="16" y="98" font-size="8" fill="#3a9" font-family="monospace">a2_w 🏠Home    a2_pf</text>
+  <text x="16" y="111" font-size="8" fill="#888" font-family="monospace">b1_w ⚡Other   b1_pf</text>
+  <text x="16" y="124" font-size="8" fill="#da0" font-family="monospace">b2_w ☀Solar   b2_pf</text>
+  <text x="16" y="137" font-size="8" fill="#69c" font-family="monospace">c1_w 🚿Shower c1_pf</text>
+  <text x="16" y="150" font-size="8" fill="#3a9" font-family="monospace">c2_w 🏠Home    c2_pf</text>
+  <text x="16" y="167" font-size="8" fill="#333" font-family="monospace" font-weight="600">solar grid home n</text>
+  <text x="110" y="195" text-anchor="middle" font-size="7" fill="#888">16 cols × 288/day ≈ 18KB/d</text>
+  <text x="110" y="207" text-anchor="middle" font-size="7" fill="#888">8640/mo ≈ 550KB/mo</text>
+  <!-- profiles -->
+  <rect x="230" y="38" width="180" height="128" fill="#fff" rx="5" stroke="#667eea" stroke-width="2"/>
+  <rect x="230" y="38" width="180" height="20" fill="#667eea" rx="5"/>
+  <rect x="230" y="54" width="180" height="4" fill="#667eea"/>
+  <text x="320" y="53" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">profiles (16 static)</text>
+  <text x="236" y="72" font-size="8" fill="#333" font-family="monospace">id   INT PK (0-15)</text>
+  <text x="236" y="85" font-size="8" fill="#333" font-family="monospace">name TEXT</text>
+  <text x="236" y="98" font-size="8" fill="#333" font-family="monospace">w    INT total watts</text>
+  <text x="236" y="111" font-size="8" fill="#333" font-family="monospace">r1,r2 BOOL relays</text>
+  <text x="236" y="124" font-size="8" fill="#333" font-family="monospace">avalon TEXT mode</text>
+  <text x="320" y="150" text-anchor="middle" font-size="7" fill="#888">OFF(0)→BN(81)→...→MAX(2001)</text>
+  <!-- transitions -->
+  <rect x="230" y="185" width="180" height="108" fill="#fff" rx="5" stroke="#fa709a" stroke-width="2"/>
+  <rect x="230" y="185" width="180" height="20" fill="#fa709a" rx="5"/>
+  <rect x="230" y="201" width="180" height="4" fill="#fa709a"/>
+  <text x="320" y="200" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">transitions (~20/day)</text>
+  <text x="236" y="220" font-size="8" fill="#333" font-family="monospace">ts      TIMESTAMPTZ</text>
+  <text x="236" y="233" font-size="8" fill="#667eea" font-family="monospace">old_id  FK→profiles</text>
+  <text x="236" y="246" font-size="8" fill="#667eea" font-family="monospace">new_id  FK→profiles</text>
+  <text x="236" y="259" font-size="8" fill="#333" font-family="monospace">surplus, grid REAL</text>
+  <text x="320" y="282" text-anchor="middle" font-size="7" fill="#888">Only on state changes</text>
+  <line x1="320" y1="166" x2="320" y2="185" stroke="#667eea" stroke-width="1.5" stroke-dasharray="3"/>
+  <!-- config -->
+  <rect x="430" y="38" width="255" height="80" fill="#fff" rx="5" stroke="#333" stroke-width="2"/>
+  <rect x="430" y="38" width="255" height="20" fill="#333" rx="5"/>
+  <rect x="430" y="54" width="255" height="4" fill="#333"/>
+  <text x="557" y="53" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">config (3 rows)</text>
+  <text x="436" y="72" font-size="8" fill="#333" font-family="monospace">key TEXT PK | value JSONB</text>
+  <text x="436" y="88" font-size="7" fill="#888">thresholds | schedule | auto</text>
+  <text x="436" y="104" font-size="7" fill="#888">Edit via Supabase dashboard</text>
+  <!-- views -->
+  <rect x="430" y="135" width="255" height="65" fill="#e8f5e9" rx="5" stroke="#3ecf8e" stroke-dasharray="3"/>
+  <text x="557" y="155" text-anchor="middle" font-size="10" font-weight="700" fill="#333">Views (no storage)</text>
+  <text x="436" y="172" font-size="8" fill="#555" font-family="monospace">latest | hourly | daily</text>
+  <text x="436" y="188" font-size="7" fill="#888">Computed on-the-fly from energy table</text>
+  <!-- totals -->
+  <rect x="430" y="215" width="255" height="75" fill="#fff3e0" rx="5" stroke="#FFb700"/>
+  <text x="557" y="235" text-anchor="middle" font-size="10" font-weight="700" fill="#333">📊 Estimates</text>
+  <text x="436" y="253" font-size="8.5" fill="#555">energy:      8,640/mo = 105K/yr</text>
+  <text x="436" y="268" font-size="8.5" fill="#555">transitions: 600/mo   = 7K/yr</text>
+  <text x="436" y="283" font-size="9" fill="#333" font-weight="700">Total ≈ 6 MB/yr → 80yr free ✅</text>
+</svg>

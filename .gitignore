@@ -1,0 +1,19 @@
+# Environment variables (contains API keys)
+.env
+
+# Arduino credentials header (contains real passwords)
+MinerControl_WebUI_FINAL/credentials.h
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# Temp scripts
+consolidate_and_generate.py
+retry_circuit.py
+*.raw.txt
