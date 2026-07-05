@@ -5,6 +5,11 @@
 </p>
 
 <p align="center">
+  <img src="diagrams/house_isometric_diagram_project.png" alt="Solar Mining Farm" width="48%"/>
+  <img src="diagrams/House_isometric_diagram_miners inside view_no_circuit.png" alt="Mining Fleet Inside View" width="48%"/>
+</p>
+
+<p align="center">
   <a href="#-how-it-works">How It Works</a> •
   <a href="#-hardware">Hardware</a> •
   <a href="#%EF%B8%8F-solar-array">Solar Array</a> •
@@ -23,7 +28,7 @@ A fully autonomous solar-powered Bitcoin mining system that dynamically scales h
 **Key principle:** If the grid meter shows importing → scale down miners. If exporting → scale up. Never pay for electricity to mine.
 
 <p align="center">
-  <img src="Miner_solar_cluster_imgs/Distribution_dashboard_circuit_diagram.png" alt="Circuit Diagram" width="700"/>
+  <img src="diagrams/Distribution_dashboard_circuit_diagram.png" alt="Circuit Diagram" width="700"/>
 </p>
 
 ---
@@ -57,9 +62,6 @@ Every **5 minutes**, the ESP32:
 5. **Executes** relay switches and Avalon Q API commands
 6. **Logs** everything to Supabase cloud database
 
-<p align="center">
-  <img src="Miner_solar_cluster_imgs/house_isometric_diagram_project.png" alt="Solar Mining Farm - House with Solar Panels" width="600"/>
-</p>
 
 ---
 
