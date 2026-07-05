@@ -64,7 +64,7 @@ bool   refossFound = false;
 
 // Intervals (ms)
 #define REFOSS_POLL_MS    30000
-#define SUPABASE_PUSH_MS  300000
+#define SUPABASE_PUSH_MS  600000   // 10 min — Avalon Q needs ~5-8 min to ramp hashrate after mode change
 #define REFOSS_DISC_MS    60000
 
 // Miners grouped by relay
@@ -116,8 +116,8 @@ struct ChannelData {
 ChannelData liveCh[6];
 float liveSolar = 0, liveGrid = 0, liveHome = 0;
 
-// Aggregation buffer
-#define MAX_SAMPLES 12
+// Aggregation buffer (10 min ÷ 30s = up to 20 samples per cycle)
+#define MAX_SAMPLES 24
 float aggPower[6][MAX_SAMPLES];
 float aggVoltage[3][MAX_SAMPLES];
 float aggCurrent[6][MAX_SAMPLES];
