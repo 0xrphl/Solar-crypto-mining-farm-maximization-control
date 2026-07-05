@@ -674,7 +674,7 @@ void parseRefossResponse(String resp) {
     //   Solar = A1 + |B2|   (B2 may read negative due to CT direction)
     //   Grid  = A2 + C2     (negative = exporting, positive = importing)
     //   House = |B1| + |C1| (absolute values, power always consumed)
-    liveSolar = liveCh[0].power_w + fabs(liveCh[4].power_w);   // A1 + |B2|
+    liveSolar = fabs(liveCh[0].power_w) + fabs(liveCh[4].power_w);   // |A1| + |B2| (abs for both — CT clamp direction independent)
     liveGrid  = liveCh[3].power_w + liveCh[5].power_w;          // A2 + C2 (direct grid measurement)
     liveHome  = fabs(liveCh[1].power_w) + fabs(liveCh[2].power_w); // |B1| + |C1| (house consumption)
     refossDataValid = true;

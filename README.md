@@ -242,7 +242,7 @@ The system uses a **bi-phase** electrical configuration. All three quantities (s
 
 | Clamp | Refoss Channel | Wire Color | Measures | Formula |
 |-------|---------------|------------|----------|---------|
-| **A1** | ch1 / em:1 | — | ☀️ Solar Phase A | **Solar = A1 + \|B2\|** |
+| **A1** | ch1 / em:1 | — | ☀️ Solar Phase A | **Solar = \|A1\| + \|B2\|** |
 | **B2** | ch5 / em:5 | Green | ☀️ Solar Phase B | |
 | **A2** | ch4 / em:4 | Red | ⚡ Grid Phase A | **Grid = A2 + C2** |
 | **C2** | ch6 / em:6 | Black | ⚡ Grid Phase B | (negative = exporting) |
