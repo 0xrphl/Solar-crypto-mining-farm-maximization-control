@@ -67,6 +67,7 @@ bool   refossFound = false;
 #define SUPABASE_PUSH_MS  300000   // 5 min — push energy data + relay decisions (BitAxe/Octaxe ramp fast)
 #define AVALON_DECISION_MS 600000  // 10 min — Avalon Q needs ~5-8 min to ramp hashrate after mode change
 #define REFOSS_DISC_MS    60000
+#define AVALON_CMD_COOLDOWN_MS 30000  // 30s cooldown between Avalon commands to prevent rapid-fire conflicts
 
 // Miners grouped by relay
 struct Miner {
@@ -131,6 +132,7 @@ unsigned long lastRefossPoll  = 0;
 unsigned long lastSupaPush    = 0;
 unsigned long lastAvalonDecision = 0;  // separate 10-min timer for Avalon Q decisions
 unsigned long lastRefossDisc  = 0;
+unsigned long lastAvalonCmdTime = 0;   // cooldown: timestamp of last Avalon command sent
 bool refossDataValid = false;
 
 // ==================== MINING DECISION ENGINE ====================
@@ -311,9 +313,10 @@ void loop() {
         
         if (avalonCycle) {
             lastAvalonDecision = now;
-            verifyMinerStates();          // full verify: relays + all miners + Avalon (every 10 min)
-            runMiningDecision(true);      // full decision: relays + Avalon mode changes
-            Serial.println(">> 10-min cycle: full verify + Avalon decision");
+            runMiningDecision(true);      // FIRST: decide new state based on surplus (may send Avalon commands)
+            delay(2000);                  // let Avalon process any command before verifying
+            verifyMinerStates();          // THEN: verify the NEW state was applied correctly
+            Serial.println(">> 10-min cycle: Avalon decision + verify");
         } else {
             runMiningDecision(false);     // relay-only decision: R1/R2 can change, Avalon stays
             Serial.println(">> 5-min cycle: relay-only decision");
@@ -815,17 +818,36 @@ void queryAvalonActualState() {
         
         String mpo = extractBracketValue(resp2, "MPO");
         String wm = extractBracketValue(resp2, "WORKMODE");
+        String softoff = extractBracketValue(resp2, "SoftOFF");
+        String state = extractBracketValue(resp2, "STATE");
+        String ghsavg = extractBracketValue(resp2, "GHSavg");
         
         if (mpo.length() > 0) actualAvalonMPO = mpo.toInt();
         
+        float ghsVal = 0;
+        if (ghsavg.length() > 0) ghsVal = ghsavg.toFloat();
+        
         Serial.print(" MPO="); Serial.print(actualAvalonMPO);
         Serial.print(" WORKMODE="); Serial.print(wm);
+        Serial.print(" SoftOFF="); Serial.print(softoff);
+        Serial.print(" STATE="); Serial.print(state);
+        Serial.print(" GHSavg="); Serial.print(ghsavg);
         
-        // Determine actual mode from hashrate + workmode
-        // If hashrate < 1000 MH/s (1 GH/s), consider it sleeping/off
-        if (actualAvalonMHS < 1000) {
+        // CRITICAL: Check SoftOFF flag FIRST — CGMiner reports cached hashrate/workmode
+        // even when in standby. SoftOFF > 0 means standby is active (not boolean — can be 1,2,3,4...)
+        // STATE=1 means "In Work", anything else (0,2,etc) means not actively mining
+        int softoffVal = softoff.toInt();
+        int stateVal = state.toInt();
+        
+        if (softoffVal > 0) {
             actualAvalonMode = "sleep";
-            Serial.println(" → SLEEP (low hashrate)");
+            Serial.print(" → SLEEP (SoftOFF="); Serial.print(softoffVal); Serial.println(", standby confirmed)");
+        } else if (stateVal != 1 && ghsVal < 1.0) {
+            actualAvalonMode = "sleep";
+            Serial.print(" → SLEEP (STATE="); Serial.print(stateVal); Serial.println(", no hashrate)");
+        } else if (actualAvalonMHS < 1000 && ghsVal < 1.0) {
+            actualAvalonMode = "sleep";
+            Serial.println(" → SLEEP (both MHS av and GHSavg near zero)");
         } else if (wm == "0") {
             actualAvalonMode = "low";
             Serial.println(" → LOW");
@@ -1412,6 +1434,7 @@ String extractEqualsValue(String resp, String key) {
 
 String getAvalonStatus(int idx) {
     String json = "{";
+    float summaryMHS = 0;  // track hashrate to detect standby
     
     // Step 1: Send "summary" command for hash rate and uptime
     {
@@ -1441,10 +1464,11 @@ String getAvalonStatus(int idx) {
         // Parse summary format: MHS av=50391540.54, Elapsed=1272
         String mhsStr = extractEqualsValue(resp, "MHS av");
         if (mhsStr.length() > 0) {
-            float mhs = mhsStr.toFloat();
-            if (mhs > 1000000) json += "\"hashrate\":\"" + String(mhs / 1e6, 2) + " TH/s\",";
-            else if (mhs > 1000) json += "\"hashrate\":\"" + String(mhs / 1e3, 2) + " GH/s\",";
-            else json += "\"hashrate\":\"" + String(mhs, 0) + " MH/s\",";
+            summaryMHS = mhsStr.toFloat();
+            if (summaryMHS > 1000000) json += "\"hashrate\":\"" + String(summaryMHS / 1e6, 2) + " TH/s\",";
+            else if (summaryMHS > 1000) json += "\"hashrate\":\"" + String(summaryMHS / 1e3, 2) + " GH/s\",";
+            else if (summaryMHS > 0) json += "\"hashrate\":\"" + String(summaryMHS, 0) + " MH/s\",";
+            else json += "\"hashrate\":\"0 (idle)\",";
         } else json += "\"hashrate\":\"N/A\",";
         
         String elapsed = extractEqualsValue(resp, "Elapsed");
@@ -1456,7 +1480,7 @@ String getAvalonStatus(int idx) {
         } else json += "\"uptime\":\"N/A\",";
     }
     
-    // Step 2: Send "estats" command for temp, power, workmode
+    // Step 2: Send "estats" command for temp, power, workmode, standby state
     delay(200);
     {
         WiFiClient client;
@@ -1489,6 +1513,34 @@ String getAvalonStatus(int idx) {
             
             Serial.print("Avalon estats ("); Serial.print(resp.length()); Serial.println("b)");
             
+            // Detect standby state from estats fields:
+            // SoftOFF[1] = standby active, SoftOFF[0] = not in standby
+            // STATE[1] = working, STATE[0] = idle/standby
+            // SYSTEMSTATU contains "In Work" when mining
+            // GHSavg[0.00] or very low = not hashing
+            String softoff = extractBracketValue(resp, "SoftOFF");
+            String state = extractBracketValue(resp, "STATE");
+            String ghsavg = extractBracketValue(resp, "GHSavg");
+            String systemStatus = extractBracketValue(resp, "SYSTEMSTATU");
+            
+            float ghsVal = 0;
+            if (ghsavg.length() > 0) ghsVal = ghsavg.toFloat();
+            
+            // Determine if miner is in standby
+            // SoftOFF > 0 means standby active (not boolean — can be 1,2,3,4...)
+            // STATE=1 means "In Work", anything else means not actively mining
+            int softoffVal = softoff.toInt();
+            int stateVal = state.toInt();
+            bool isStandby = false;
+            if (softoffVal > 0) isStandby = true;                    // SoftOFF flag > 0 = standby
+            else if (stateVal != 1 && ghsVal < 1.0) isStandby = true; // STATE != 1 and no hashrate
+            else if (summaryMHS < 1000 && ghsVal < 1.0) isStandby = true; // both hashrates near zero
+            
+            Serial.print("  SoftOFF="); Serial.print(softoff);
+            Serial.print(" STATE="); Serial.print(state);
+            Serial.print(" GHSavg="); Serial.print(ghsavg);
+            Serial.print(" → standby="); Serial.println(isStandby ? "YES" : "NO");
+            
             // Parse bracket format from estats response
             // Temp: ITemp[36] (internal), TMax[70], TAvg[65]
             String itemp = extractBracketValue(resp, "ITemp");
@@ -1497,21 +1549,37 @@ String getAvalonStatus(int idx) {
             else if (itemp.length() > 0) json += "\"temp\":\"" + itemp + "\",";
             else json += "\"temp\":\"N/A\",";
             
-            // Power: MPO[800] = Mode Power Output in watts
+            // Power: MPO[800] = Mode Power Output in watts (configured, not actual)
+            // When in standby, show 0W actual
             String mpo = extractBracketValue(resp, "MPO");
-            if (mpo.length() > 0) json += "\"power\":\"" + mpo + "\",";
-            else json += "\"power\":\"N/A\",";
+            if (isStandby) {
+                json += "\"power\":\"0 (standby, rated " + mpo + ")\",";
+            } else if (mpo.length() > 0) {
+                json += "\"power\":\"" + mpo + "\",";
+            } else {
+                json += "\"power\":\"N/A\",";
+            }
             
             // Work mode: WORKMODE[0] (0=low, 1=mid, 2=high)
-            String wm = extractBracketValue(resp, "WORKMODE");
-            if (wm.length() > 0) {
-                String modeName = "Unknown";
-                if (wm == "0") modeName = "Low (0)";
-                else if (wm == "1") modeName = "Mid (1)";
-                else if (wm == "2") modeName = "High (2)";
-                else modeName = wm;
-                json += "\"mode\":\"" + modeName + "\"";
-            } else json += "\"mode\":\"N/A\"";
+            // Override with STANDBY if detected
+            if (isStandby) {
+                String wm = extractBracketValue(resp, "WORKMODE");
+                String wmLabel = "";
+                if (wm == "0") wmLabel = "Low";
+                else if (wm == "1") wmLabel = "Mid";
+                else if (wm == "2") wmLabel = "High";
+                json += "\"mode\":\"STANDBY (was " + wmLabel + ")\"";
+            } else {
+                String wm = extractBracketValue(resp, "WORKMODE");
+                if (wm.length() > 0) {
+                    String modeName = "Unknown";
+                    if (wm == "0") modeName = "Low (0)";
+                    else if (wm == "1") modeName = "Mid (1)";
+                    else if (wm == "2") modeName = "High (2)";
+                    else modeName = wm;
+                    json += "\"mode\":\"" + modeName + "\"";
+                } else json += "\"mode\":\"N/A\"";
+            }
         } else {
             json += "\"temp\":\"N/A\",\"power\":\"N/A\",\"mode\":\"N/A\"";
         }
@@ -1522,6 +1590,31 @@ String getAvalonStatus(int idx) {
 }
 
 String controlAvalon(int idx, String command) {
+    // Cooldown guard: prevent rapid-fire commands that cause fan errors
+    // (manual web UI commands bypass cooldown — only auto commands respect it)
+    unsigned long now = millis();
+    if (lastAvalonCmdTime > 0 && (now - lastAvalonCmdTime) < AVALON_CMD_COOLDOWN_MS) {
+        // Only enforce cooldown for state-changing commands, not queries
+        if (command != "summary") {
+            unsigned long remaining = (AVALON_CMD_COOLDOWN_MS - (now - lastAvalonCmdTime)) / 1000;
+            Serial.print("Avalon COOLDOWN: skipping '"); Serial.print(command);
+            Serial.print("' ("); Serial.print(remaining); Serial.println("s remaining)");
+            return "Cooldown: wait " + String(remaining) + "s";
+        }
+    }
+
+    // Skip redundant standby if Avalon is already sleeping/off
+    if (command == "standby" && (actualAvalonMode == "sleep" || actualAvalonMode == "off")) {
+        Serial.println("Avalon: already sleeping/off, skipping redundant standby");
+        return "Already in standby";
+    }
+    
+    // Skip redundant wakeup if Avalon is already actively mining
+    if (command == "wakeup" && actualAvalonMode != "sleep" && actualAvalonMode != "off" && actualAvalonMode != "unknown") {
+        Serial.println("Avalon: already active, skipping redundant wakeup");
+        return "Already active";
+    }
+
     WiFiClient client;
     if (!client.connect(miners[idx].ip, miners[idx].port)) return "Connection failed";
 
@@ -1539,6 +1632,12 @@ String controlAvalon(int idx, String command) {
     else if (command == "reboot")   cmd = "ascset|0,reboot,0";
 
     Serial.print("Avalon cmd: "); Serial.println(cmd);
+    
+    // Update cooldown timer for state-changing commands
+    if (command != "summary") {
+        lastAvalonCmdTime = millis();
+    }
+    
     client.print(cmd);
     client.flush();
     delay(1000);
