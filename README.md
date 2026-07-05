@@ -389,8 +389,8 @@ This prevents scenarios like the Avalon Q turning back on after a power outage w
 | [🔧 Setup & Config](documentation/SETUP_AND_CONFIG.md) | Arduino IDE setup, board settings, Tasmota relay configuration (both ESP32 and ESP8266 boards), network config, troubleshooting |
 | [💾 Database](documentation/DATABASE.md) | Supabase schema, energy & transitions tables, audit queries, dashboard views |
 | [🖥️ Web UI](documentation/WEB_UI.md) | Browser interface layout, API endpoints, auto-refresh intervals |
-| [📋 Tasmota ESP32 Relay Setup](TASMOTA_ESP32_2X_RELAY_SETUP.md) | Complete GPIO mapping, configuration, HTTP API for the active ESP32 relay board |
-| [📋 Tasmota ESP12F Relay Setup](TASMOTA_ESP12F_2CH_SETUP.md) | Complete setup for the backup 30A ESP8266 relay board |
+| [📋 Tasmota ESP32 Relay Setup](documentation/TASMOTA_ESP32_2X_RELAY_SETUP.md) | Complete GPIO mapping, configuration, HTTP API for the active ESP32 relay board |
+| [📋 Tasmota ESP12F Relay Setup](documentation/TASMOTA_ESP12F_2CH_SETUP.md) | Complete setup for the backup 30A ESP8266 relay board |
 
 ---
 
@@ -409,8 +409,9 @@ This prevents scenarios like the Avalon Q turning back on after a power outage w
 ├── diagrams/                           ← 10 SVG architecture diagrams
 ├── Miner_solar_cluster_imgs/           ← 60+ project photos
 │   └── dashboard_pngs/                 ← Miner product images
-├── TASMOTA_ESP32_2X_RELAY_SETUP.md     ← Active relay board documentation
-├── TASMOTA_ESP12F_2CH_SETUP.md         ← Backup relay board documentation
+├── documentation/
+│   ├── TASMOTA_ESP32_2X_RELAY_SETUP.md ← Active relay board documentation
+│   └── TASMOTA_ESP12F_2CH_SETUP.md     ← Backup relay board documentation
 ├── supabase_schema.sql                 ← Database schema
 ├── .gitignore                          ← Excludes credentials.h, .env
 └── README.md                           ← This file
