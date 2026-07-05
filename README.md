@@ -1,10 +1,6 @@
 # ⚡ Solar Crypto Mining Farm — Autonomous Surplus Maximization Control
 
 <p align="center">
-  <img src="Miner_solar_cluster_imgs/house_isometric_diagram_project.png" alt="Solar Mining Farm Project" width="600"/>
-</p>
-
-<p align="center">
   <strong>Mine Bitcoin ONLY with free solar energy. Zero grid consumption for mining. Ever.</strong>
 </p>
 
@@ -60,6 +56,10 @@ Every **5 minutes**, the ESP32:
 4. **Selects** the highest mining profile that fits under the surplus
 5. **Executes** relay switches and Avalon Q API commands
 6. **Logs** everything to Supabase cloud database
+
+<p align="center">
+  <img src="Miner_solar_cluster_imgs/house_isometric_diagram_project.png" alt="Solar Mining Farm - House with Solar Panels" width="600"/>
+</p>
 
 ---
 
@@ -361,6 +361,21 @@ This prevents scenarios like the Avalon Q turning back on after a power outage w
 <td align="center"><em><a href="https://www.aliexpress.us/item/3256806910315665.html">USB-TTL Adapters</a> (PL2303/CP2102/CH340G)</em></td>
 </tr>
 </table>
+
+<table>
+<tr>
+<td><img src="Miner_solar_cluster_imgs/Automatic Stripping Cutter Wire Stripper Pliers Cable Wire Crimping Electrician Aliexpress.png" width="200"/></td>
+<td><img src="Miner_solar_cluster_imgs/LAOA Multifunctional Fast Fully Automatic Wire Stripping Pliers Cable Cutting Aliexpress.png" width="200"/></td>
+<td><img src="Miner_solar_cluster_imgs/Cooling Fan Guard Metal Grill Computer Cover Fan Grill 30mm 40mm 50mm 60mm 70mm Aliexpress.png" width="200"/></td>
+</tr>
+<tr>
+<td align="center"><em><a href="https://www.aliexpress.us/item/3256808741160255.html">Wire Stripper Pliers</a></em></td>
+<td align="center"><em><a href="https://www.aliexpress.us/item/3256807032671463.html">LAOA Cable Cutting Pliers</a></em></td>
+<td align="center"><em><a href="https://www.aliexpress.us/item/3256805281155490.html">Cooling Fan Guards</a></em></td>
+</tr>
+</table>
+
+> 📸 **[View all 60+ project photos →](Miner_solar_cluster_imgs/README.md)**
 
 ---
 
