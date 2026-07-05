@@ -29,6 +29,7 @@
 #include <WiFiUdp.h>
 #include <time.h>
 #include <MD5Builder.h>
+#include <Preferences.h>    // NVS flash — persist miningState across reboots
 #include "credentials.h"   // ⚠️ Real creds in credentials.h (gitignored)
                             // Copy credentials.h.example → credentials.h
 
@@ -140,6 +141,16 @@ bool refossDataValid = false;
 
 int miningState = 0;
 bool autoMiningEnabled = true;
+Preferences prefs;  // NVS flash storage for persistent state
+
+// Actual device state (populated by verifyMinerStates)
+String actualAvalonMode = "unknown";  // "off","sleep","low","mid","high","unknown"
+float  actualAvalonMHS  = 0;          // MH/s from summary
+int    actualAvalonMPO  = 0;          // watts from estats
+float  actualBitaxeHR[3] = {0};       // hashrate for miners[0..2]
+float  actualBitaxePwr[3] = {0};      // power for miners[0..2]
+bool   actualBitaxeOn[3] = {false};   // reachable + hashing?
+String lastVerifyResult = "";         // last verify summary for UI
 
 struct MiningProfile {
     const char* name;
@@ -235,8 +246,24 @@ void setup() {
     memset(aggGrid, 0, sizeof(aggGrid));
     memset(aggHome, 0, sizeof(aggHome));
 
+    // Restore miningState from NVS (survives reboots)
+    prefs.begin("mining", false);
+    miningState = prefs.getInt("state", 0);
+    prefs.end();
+    Serial.print("Restored miningState from NVS: S");
+    Serial.print(miningState);
+    Serial.print(" ("); Serial.print(profiles[miningState].name);
+    Serial.println(")");
+
     // Try to discover Refoss EMO6P
     discoverRefoss();
+
+    // Boot-time: verify actual device states match persisted state
+    Serial.println("\n=== BOOT-TIME STATE RECONCILIATION ===");
+    displayMessage("Verifying", "Checking miners...", YELLOW);
+    delay(500);
+    verifyMinerStates();
+    Serial.println("=== BOOT RECONCILIATION COMPLETE ===\n");
 
     // Web server routes
     server.on("/", handleRoot);
@@ -697,63 +724,256 @@ unsigned long getUnixTimestamp() {
 }
 
 
+// ==================== ACTUAL DEVICE STATE HELPERS ====================
+// Query real hardware status using hashrate + power — not just TCP ping.
+// Used by verifyMinerStates() every 5 min and at boot.
+
+// Query Avalon Q via CGMiner API: returns actual mode based on hashrate + WORKMODE
+// Sets: actualAvalonMode, actualAvalonMHS, actualAvalonMPO
+void queryAvalonActualState() {
+    actualAvalonMode = "off";
+    actualAvalonMHS = 0;
+    actualAvalonMPO = 0;
+    
+    // Step 1: Try TCP connect
+    WiFiClient client;
+    client.setTimeout(3000);
+    if (!client.connect(miners[3].ip, miners[3].port)) {
+        actualAvalonMode = "off";
+        Serial.println("Verify Avalon: TCP unreachable → OFF");
+        return;
+    }
+    
+    // Step 2: Send "summary" to get hashrate
+    client.print("summary");
+    client.flush();
+    delay(500);
+    
+    String resp = "";
+    unsigned long start = millis();
+    while ((millis() - start) < 5000) {
+        while (client.available()) {
+            char c = client.read();
+            resp += c;
+            if (c == '\0' || resp.length() > 2000) break;
+        }
+        if (resp.indexOf("SUMMARY") >= 0 && resp.length() > 50) break;
+        delay(50);
+    }
+    client.stop();
+    
+    String mhsStr = extractEqualsValue(resp, "MHS av");
+    if (mhsStr.length() > 0) {
+        actualAvalonMHS = mhsStr.toFloat();
+    }
+    
+    Serial.print("Verify Avalon: MHS av="); Serial.print(actualAvalonMHS, 0);
+    
+    // Step 3: Send "estats" to get WORKMODE and MPO (power)
+    delay(200);
+    WiFiClient client2;
+    client2.setTimeout(3000);
+    if (client2.connect(miners[3].ip, miners[3].port)) {
+        client2.print("estats");
+        client2.flush();
+        delay(500);
+        
+        String resp2 = "";
+        start = millis();
+        while ((millis() - start) < 8000) {
+            while (client2.available()) {
+                char c = client2.read();
+                resp2 += c;
+                if (resp2.length() > 4000) break;
+            }
+            if (resp2.indexOf("STATS=") >= 0 && resp2.length() > 200) {
+                delay(500);
+                while (client2.available()) {
+                    char c = client2.read();
+                    resp2 += c;
+                    if (resp2.length() > 4000) break;
+                }
+                break;
+            }
+            delay(50);
+        }
+        client2.stop();
+        
+        String mpo = extractBracketValue(resp2, "MPO");
+        String wm = extractBracketValue(resp2, "WORKMODE");
+        
+        if (mpo.length() > 0) actualAvalonMPO = mpo.toInt();
+        
+        Serial.print(" MPO="); Serial.print(actualAvalonMPO);
+        Serial.print(" WORKMODE="); Serial.print(wm);
+        
+        // Determine actual mode from hashrate + workmode
+        // If hashrate < 1000 MH/s (1 GH/s), consider it sleeping/off
+        if (actualAvalonMHS < 1000) {
+            actualAvalonMode = "sleep";
+            Serial.println(" → SLEEP (low hashrate)");
+        } else if (wm == "0") {
+            actualAvalonMode = "low";
+            Serial.println(" → LOW");
+        } else if (wm == "1") {
+            actualAvalonMode = "mid";
+            Serial.println(" → MID");
+        } else if (wm == "2") {
+            actualAvalonMode = "high";
+            Serial.println(" → HIGH");
+        } else {
+            // WORKMODE not found but hashrate present — running in unknown mode
+            actualAvalonMode = "low";  // default assumption
+            Serial.println(" → RUNNING (mode unknown, assume low)");
+        }
+    } else {
+        // Can't get estats but summary worked — it's reachable but mode unknown
+        if (actualAvalonMHS < 1000) {
+            actualAvalonMode = "sleep";
+            Serial.println(" → SLEEP (estats failed, low hashrate)");
+        } else {
+            actualAvalonMode = "low";  // conservative assumption
+            Serial.println(" → RUNNING (estats failed, assume low)");
+        }
+    }
+}
+
+// Query a BitAxe/Nerdaxe/Octaxe miner: check if actually hashing
+// Sets: actualBitaxeHR[idx], actualBitaxePwr[idx], actualBitaxeOn[idx]
+void queryBitaxeActualState(int idx) {
+    actualBitaxeHR[idx] = 0;
+    actualBitaxePwr[idx] = 0;
+    actualBitaxeOn[idx] = false;
+    
+    HTTPClient http;
+    String url = "http://" + String(miners[idx].ip) + "/api/system/info";
+    http.begin(url);
+    http.setTimeout(3000);
+    int httpCode = http.GET();
+    
+    if (httpCode != 200) {
+        http.end();
+        Serial.print("Verify "); Serial.print(miners[idx].name);
+        Serial.println(": unreachable → OFF");
+        return;
+    }
+    
+    String response = http.getString();
+    http.end();
+    
+    String hr_s = extractJsonValue(response, "\"hashRate\":");
+    String pwr_s = extractJsonValue(response, "\"power\":");
+    
+    if (hr_s.length() > 0) actualBitaxeHR[idx] = hr_s.toFloat();
+    if (pwr_s.length() > 0) actualBitaxePwr[idx] = pwr_s.toFloat();
+    
+    // Consider "ON" if hashrate > 0 AND power > 1W
+    actualBitaxeOn[idx] = (actualBitaxeHR[idx] > 0 && actualBitaxePwr[idx] > 1.0);
+    
+    Serial.print("Verify "); Serial.print(miners[idx].name);
+    Serial.print(": HR="); Serial.print(actualBitaxeHR[idx], 0);
+    Serial.print(" Pwr="); Serial.print(actualBitaxePwr[idx], 1);
+    Serial.print("W → "); Serial.println(actualBitaxeOn[idx] ? "ON" : "OFF");
+}
+
+// Helper: compare expected avalon mode string with actual
+// Returns true if they match (both off/sleep, or same active mode)
+bool avalonModeMatches(const char* expected, String actual) {
+    if (strcmp(expected, "off") == 0) {
+        return (actual == "off" || actual == "sleep");
+    }
+    return (actual == String(expected));
+}
+
 // ==================== PRE-TRANSITION STATE VERIFICATION ====================
 // Before each 5-min decision, verify actual device states match expected state.
+// Queries actual hashrate + power from ALL miners (not just TCP ping).
 // After power outages or relay failures, devices may be in unexpected states.
 // If mismatch: force-correct devices and log a correction transition (old_id == new_id).
 
 void verifyMinerStates() {
     if (!autoMiningEnabled) return;
     
+    Serial.println("\n--- VERIFY: Querying actual device states ---");
+    
     const MiningProfile &expected = profiles[miningState];
     bool mismatch = false;
     String mismatches = "";
     
-    // 1. Check Tasmota relay states
-    HTTPClient http;
-    String url = "http://" + String(tasmotaIP) + "/cm?cmnd=Status%200";
-    http.begin(url);
-    http.setAuthorization(tasmotaUser, tasmotaPassword);
-    http.setTimeout(3000);
-    int httpCode = http.GET();
-    
-    if (httpCode == 200) {
-        String resp = http.getString();
-        http.end();
+    // 1. Check Tasmota relay states (actual relay position)
+    bool actualR1 = false, actualR2 = false;
+    bool tasmotaOk = false;
+    {
+        HTTPClient http;
+        String url = "http://" + String(tasmotaIP) + "/cm?cmnd=Status%200";
+        http.begin(url);
+        http.setAuthorization(tasmotaUser, tasmotaPassword);
+        http.setTimeout(3000);
+        int httpCode = http.GET();
         
-        bool actualR1 = (resp.indexOf("\"POWER1\":\"ON\"") >= 0);
-        bool actualR2 = (resp.indexOf("\"POWER2\":\"ON\"") >= 0);
-        
-        if (actualR1 != expected.relay1) {
-            mismatch = true;
-            mismatches += " R1:" + String(actualR1 ? "ON" : "OFF") + "!=" + String(expected.relay1 ? "ON" : "OFF");
+        if (httpCode == 200) {
+            String resp = http.getString();
+            http.end();
+            tasmotaOk = true;
+            
+            actualR1 = (resp.indexOf("\"POWER1\":\"ON\"") >= 0);
+            actualR2 = (resp.indexOf("\"POWER2\":\"ON\"") >= 0);
+            
+            Serial.print("Verify Tasmota: R1="); Serial.print(actualR1 ? "ON" : "OFF");
+            Serial.print(" R2="); Serial.println(actualR2 ? "ON" : "OFF");
+            
+            if (actualR1 != expected.relay1) {
+                mismatch = true;
+                mismatches += " R1:" + String(actualR1 ? "ON" : "OFF") + "!=" + String(expected.relay1 ? "ON" : "OFF");
+            }
+            if (actualR2 != expected.relay2) {
+                mismatch = true;
+                mismatches += " R2:" + String(actualR2 ? "ON" : "OFF") + "!=" + String(expected.relay2 ? "ON" : "OFF");
+            }
+        } else {
+            http.end();
+            Serial.println("Verify: Tasmota unreachable (skip relay check)");
         }
-        if (actualR2 != expected.relay2) {
-            mismatch = true;
-            mismatches += " R2:" + String(actualR2 ? "ON" : "OFF") + "!=" + String(expected.relay2 ? "ON" : "OFF");
-        }
-    } else {
-        http.end();
-        Serial.println("Verify: Tasmota unreachable");
     }
     
-    // 2. Check Avalon Q reachability (TCP ping port 4028)
-    bool avalonExpectedOn = (strcmp(expected.avalonMode, "off") != 0);
-    WiFiClient avClient;
-    avClient.setTimeout(2000);
-    bool avalonReachable = avClient.connect(miners[3].ip, miners[3].port);
-    avClient.stop();
+    // 2. Query BitAxe miners (idx 0,1,2) — actual hashrate + power
+    for (int i = 0; i < 3; i++) {
+        queryBitaxeActualState(i);
+    }
     
-    if (avalonExpectedOn && !avalonReachable) {
+    // Cross-check: R1 miners (BitAxe idx=0 + Nerdaxe idx=1)
+    bool r1MinersHashing = (actualBitaxeOn[0] || actualBitaxeOn[1]);
+    if (expected.relay1 && tasmotaOk && actualR1 && !r1MinersHashing) {
+        // Relay is ON but miners aren't hashing — could be booting
+        Serial.println("Verify: R1 ON but miners not hashing yet (may be booting)");
+    }
+    
+    // Cross-check: R2 miner (Octaxe idx=2)
+    if (expected.relay2 && tasmotaOk && actualR2 && !actualBitaxeOn[2]) {
+        Serial.println("Verify: R2 ON but Octaxe not hashing yet (may be booting)");
+    }
+    
+    // 3. Query Avalon Q — actual hashrate + workmode + power
+    queryAvalonActualState();
+    
+    // Check Avalon mode mismatch
+    if (!avalonModeMatches(expected.avalonMode, actualAvalonMode)) {
         mismatch = true;
-        mismatches += " Avalon:OFFLINE!=ON";
-    } else if (!avalonExpectedOn && avalonReachable) {
-        mismatch = true;
-        mismatches += " Avalon:ONLINE!=OFF";
+        mismatches += " Avalon:" + actualAvalonMode + "!=" + String(expected.avalonMode);
+    }
+    
+    // Build verify summary for UI
+    lastVerifyResult = "R1:" + String(actualR1 ? "ON" : "OFF");
+    lastVerifyResult += " R2:" + String(actualR2 ? "ON" : "OFF");
+    lastVerifyResult += " AV:" + actualAvalonMode;
+    if (actualAvalonMHS > 0) {
+        if (actualAvalonMHS > 1000000) lastVerifyResult += "(" + String(actualAvalonMHS / 1e6, 1) + "TH)";
+        else lastVerifyResult += "(" + String(actualAvalonMHS / 1e3, 0) + "GH)";
     }
     
     if (!mismatch) {
-        Serial.println("Verify: All devices match expected state S" + String(miningState));
+        Serial.println("Verify: ✓ All devices match expected S" + String(miningState) + " (" + String(expected.name) + ")");
+        Serial.println("--- VERIFY COMPLETE (no action needed) ---\n");
         return;
     }
     
@@ -765,26 +985,48 @@ void verifyMinerStates() {
     Serial.println("Force-correcting all devices...");
     
     // Force relay 1
-    String r1res = controlTasmotaRelay(1, expected.relay1 ? "ON" : "OFF");
-    Serial.print("  R1 forced "); Serial.print(expected.relay1 ? "ON" : "OFF");
-    Serial.print(": "); Serial.println(r1res);
+    if (tasmotaOk && actualR1 != expected.relay1) {
+        String r1res = controlTasmotaRelay(1, expected.relay1 ? "ON" : "OFF");
+        Serial.print("  R1 forced "); Serial.print(expected.relay1 ? "ON" : "OFF");
+        Serial.print(": "); Serial.println(r1res);
+    }
     
     // Force relay 2
-    String r2res = controlTasmotaRelay(2, expected.relay2 ? "ON" : "OFF");
-    Serial.print("  R2 forced "); Serial.print(expected.relay2 ? "ON" : "OFF");
-    Serial.print(": "); Serial.println(r2res);
+    if (tasmotaOk && actualR2 != expected.relay2) {
+        String r2res = controlTasmotaRelay(2, expected.relay2 ? "ON" : "OFF");
+        Serial.print("  R2 forced "); Serial.print(expected.relay2 ? "ON" : "OFF");
+        Serial.print(": "); Serial.println(r2res);
+    }
     
-    // Force Avalon Q state
-    if (avalonExpectedOn && !avalonReachable) {
-        // Avalon should be on but is unreachable — try waking it
-        Serial.println("  Avalon Q: attempting wake (was unreachable)");
-        controlAvalon(3, "wakeup");
-        delay(2000);
-        controlAvalon(3, expected.avalonMode);
-    } else if (!avalonExpectedOn && avalonReachable) {
-        // Avalon should be off but is running — send standby
-        Serial.println("  Avalon Q: forcing standby (was running unexpectedly)");
+    // Force Avalon Q state — based on actual mode detection
+    bool avalonExpectedOn = (strcmp(expected.avalonMode, "off") != 0);
+    bool avalonActuallyOn = (actualAvalonMode != "off" && actualAvalonMode != "sleep");
+    
+    if (avalonExpectedOn && !avalonActuallyOn) {
+        // Avalon should be mining but is sleeping/off
+        if (actualAvalonMode == "off") {
+            Serial.println("  Avalon Q: unreachable, attempting wake...");
+            controlAvalon(3, "wakeup");
+            delay(3000);
+        } else if (actualAvalonMode == "sleep") {
+            Serial.println("  Avalon Q: sleeping (CGMiner alive but not hashing), waking...");
+            controlAvalon(3, "wakeup");
+            delay(3000);
+        }
+        String r = controlAvalon(3, expected.avalonMode);
+        Serial.print("  Avalon Q: set "); Serial.print(expected.avalonMode);
+        Serial.print(" → "); Serial.println(r);
+    } else if (!avalonExpectedOn && avalonActuallyOn) {
+        // Avalon should be off but is mining
+        Serial.print("  Avalon Q: running in "); Serial.print(actualAvalonMode);
+        Serial.println(" but should be OFF, sending standby...");
         controlAvalon(3, "standby");
+    } else if (avalonExpectedOn && avalonActuallyOn && actualAvalonMode != String(expected.avalonMode)) {
+        // Avalon is mining but in wrong mode (e.g., low vs mid)
+        Serial.print("  Avalon Q: mode "); Serial.print(actualAvalonMode);
+        Serial.print(" → changing to "); Serial.println(expected.avalonMode);
+        String r = controlAvalon(3, expected.avalonMode);
+        Serial.print("  Result: "); Serial.println(r);
     }
     
     lastAction = "CORRECTED: " + String(expected.name) + mismatches;
@@ -844,9 +1086,13 @@ void runMiningDecision() {
         return;
     }
 
-    // Apply the new state
+    // Apply the new state + persist to NVS
     int oldState = miningState;
     miningState = targetState;
+    prefs.begin("mining", false);
+    prefs.putInt("state", miningState);
+    prefs.end();
+    Serial.print("NVS: saved miningState="); Serial.println(miningState);
     const MiningProfile &p = profiles[targetState];
 
     Serial.print(">>> SWITCHING to "); Serial.print(p.name);
@@ -1366,6 +1612,10 @@ void handleEnergy() {
     json += "\"mining_name\":\"" + String(profiles[miningState].name) + "\",";
     json += "\"mining_w\":" + String(profiles[miningState].totalW) + ",";
     json += "\"auto_enabled\":" + String(autoMiningEnabled ? "true" : "false") + ",";
+    json += "\"verify\":\"" + lastVerifyResult + "\",";
+    json += "\"avalon_actual\":\"" + actualAvalonMode + "\",";
+    json += "\"avalon_mhs\":" + String(actualAvalonMHS, 0) + ",";
+    json += "\"avalon_mpo\":" + String(actualAvalonMPO) + ",";
     json += "\"channels\":[";
     const char* chNames[] = {"A1_Solar","B1_House","C1_Shower","A2_Grid","B2_Solar","C2_Grid"};
     for (int i = 0; i < 6; i++) {
@@ -1576,6 +1826,8 @@ void sendJavaScript() {
     j += "document.getElementById('eSmp').textContent=d.samples;";
     j += "var info=d.refoss_found?'EMO6P @ '+d.refoss_ip:'Searching...';";
     j += "info+=' | Mining: '+d.mining_name+' ('+d.mining_w+'W)';";
+    j += "if(d.avalon_actual&&d.avalon_actual!='unknown') info+=' | AV:'+d.avalon_actual.toUpperCase();";
+    j += "if(d.avalon_mpo>0) info+=' '+d.avalon_mpo+'W';";
     j += "document.getElementById('refI').textContent=info;";
     j += "var cd=document.getElementById('chD');cd.innerHTML='';";
     j += "var colors=['#FFD700','#ff6b6b','#87CEEB','#4ecdc4','#FFD700','#4ecdc4'];";
