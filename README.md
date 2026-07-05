@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="diagrams/house_isometric_diagram_project.png" alt="Solar Mining Farm" width="48%"/>
+  <img src="diagrams/Distribution_dashboard_circuit_diagram.png" alt="System Circuit Diagram" width="48%"/>
   <img src="diagrams/House_isometric_diagram_miners inside view_no_circuit.png" alt="Mining Fleet Inside View" width="48%"/>
 </p>
 
@@ -60,7 +60,7 @@ Every **5 minutes**, the ESP32:
 6. **Logs** everything to Supabase cloud database
 
 <p align="center">
-  <img src="diagrams/Distribution_dashboard_circuit_diagram.png" alt="Distribution & Circuit Diagram" width="700"/>
+  <img src="diagrams/house_isometric_diagram_project.png" alt="Solar Mining Farm - House with Solar Panels" width="700"/>
 </p>
 
 ---
