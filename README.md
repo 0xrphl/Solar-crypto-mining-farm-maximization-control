@@ -9,6 +9,7 @@
   <img src="diagrams/House_isometric_diagram_miners inside view_no_circuit.png" alt="Mining Fleet Inside View" width="48%"/>
 </p>
 
+
 <p align="center">
   <a href="#-how-it-works">How It Works</a> •
   <a href="#-hardware">Hardware</a> •
@@ -26,10 +27,6 @@
 A fully autonomous solar-powered Bitcoin mining system that dynamically scales hash power (0–2001W, 0–104.5 TH/s) to match real-time solar surplus. An ESP32-S3 microcontroller reads a 6-channel energy monitor every 30 seconds, calculates available solar power, and automatically switches between **16 mining profiles** — from a single 21W BitAxe to a full 2001W fleet including an Avalon Q at 90 TH/s.
 
 **Key principle:** If the grid meter shows importing → scale down miners. If exporting → scale up. Never pay for electricity to mine.
-
-<p align="center">
-  <img src="diagrams/Distribution_dashboard_circuit_diagram.png" alt="Circuit Diagram" width="700"/>
-</p>
 
 ---
 
@@ -62,6 +59,9 @@ Every **5 minutes**, the ESP32:
 5. **Executes** relay switches and Avalon Q API commands
 6. **Logs** everything to Supabase cloud database
 
+<p align="center">
+  <img src="diagrams/Distribution_dashboard_circuit_diagram.png" alt="Distribution & Circuit Diagram" width="700"/>
+</p>
 
 ---
 
