@@ -64,7 +64,8 @@ bool   refossFound = false;
 
 // Intervals (ms)
 #define REFOSS_POLL_MS    30000
-#define SUPABASE_PUSH_MS  600000   // 10 min — Avalon Q needs ~5-8 min to ramp hashrate after mode change
+#define SUPABASE_PUSH_MS  300000   // 5 min — push energy data + relay decisions (BitAxe/Octaxe ramp fast)
+#define AVALON_DECISION_MS 600000  // 10 min — Avalon Q needs ~5-8 min to ramp hashrate after mode change
 #define REFOSS_DISC_MS    60000
 
 // Miners grouped by relay
@@ -128,6 +129,7 @@ int   aggCount = 0;
 
 unsigned long lastRefossPoll  = 0;
 unsigned long lastSupaPush    = 0;
+unsigned long lastAvalonDecision = 0;  // separate 10-min timer for Avalon Q decisions
 unsigned long lastRefossDisc  = 0;
 bool refossDataValid = false;
 
@@ -300,12 +302,24 @@ void loop() {
         pollRefossEnergy();
     }
 
-    // Every 5 min: run mining decision THEN push to Supabase
+    // Every 5 min: relay decisions + push to Supabase
     if (refossDataValid && (now - lastSupaPush > SUPABASE_PUSH_MS)) {
         lastSupaPush = now;
-        verifyMinerStates();  // verify actual states match expected (power outage recovery)
-        runMiningDecision();  // decide FIRST on averaged data
-        pushToSupabase();     // then push data to cloud
+        
+        // Check if this is also a 10-min Avalon cycle
+        bool avalonCycle = (now - lastAvalonDecision > AVALON_DECISION_MS) || (lastAvalonDecision == 0);
+        
+        if (avalonCycle) {
+            lastAvalonDecision = now;
+            verifyMinerStates();          // full verify: relays + all miners + Avalon (every 10 min)
+            runMiningDecision(true);      // full decision: relays + Avalon mode changes
+            Serial.println(">> 10-min cycle: full verify + Avalon decision");
+        } else {
+            runMiningDecision(false);     // relay-only decision: R1/R2 can change, Avalon stays
+            Serial.println(">> 5-min cycle: relay-only decision");
+        }
+        
+        pushToSupabase();                 // push energy data every 5 min
     }
 
     delay(10);
@@ -1048,14 +1062,21 @@ void verifyMinerStates() {
 }
 
 // ==================== MINING DECISION ENGINE ====================
+// includeAvalon: true = full decision (relays + Avalon), false = relay-only (Avalon stays)
 
-void runMiningDecision() {
+void runMiningDecision(bool includeAvalon) {
     if (!autoMiningEnabled || !refossDataValid) return;
 
-    // Use averaged grid from this 5-min window
+    // Recency-weighted grid average: recent samples (last 5) count 2x
+    // This makes decisions react to current conditions, not stale data
     float avgGrid = 0;
-    for (int s = 0; s < aggCount; s++) avgGrid += aggGrid[s];
-    if (aggCount > 0) avgGrid /= aggCount;
+    float totalWeight = 0;
+    for (int s = 0; s < aggCount; s++) {
+        float weight = (s >= aggCount - 5) ? 2.0 : 1.0;  // last 5 samples get 2x weight
+        avgGrid += aggGrid[s] * weight;
+        totalWeight += weight;
+    }
+    if (totalWeight > 0) avgGrid /= totalWeight;
 
     // surplus = how much power we can use for mining
     // grid negative = exporting = surplus available
@@ -1063,15 +1084,21 @@ void runMiningDecision() {
     float surplus = -avgGrid + profiles[miningState].totalW;
 
     // Find the highest profile whose totalW fits UNDER the surplus
+    // If relay-only mode: only consider profiles with the SAME Avalon mode
+    const char* currentAvMode = profiles[miningState].avalonMode;
     int targetState = 0;
     for (int i = NUM_PROFILES - 1; i >= 0; i--) {
         if (profiles[i].totalW <= surplus) {
+            if (!includeAvalon && strcmp(profiles[i].avalonMode, currentAvMode) != 0) {
+                continue;  // skip profiles that would change Avalon mode
+            }
             targetState = i;
             break;
         }
     }
 
     Serial.println("\n=== MINING DECISION ===");
+    Serial.print(includeAvalon ? "[FULL] " : "[RELAY-ONLY] ");
     Serial.print("Avg Grid: "); Serial.print(avgGrid, 0);
     Serial.print("W  Surplus: "); Serial.print(surplus, 0); Serial.println("W");
     Serial.print("Current: S"); Serial.print(miningState);
