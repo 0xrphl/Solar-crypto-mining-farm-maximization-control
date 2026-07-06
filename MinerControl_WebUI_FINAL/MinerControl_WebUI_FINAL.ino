@@ -833,15 +833,20 @@ void queryAvalonActualState() {
         Serial.print(" STATE="); Serial.print(state);
         Serial.print(" GHSavg="); Serial.print(ghsavg);
         
-        // CRITICAL: Check SoftOFF flag FIRST — CGMiner reports cached hashrate/workmode
-        // even when in standby. SoftOFF > 0 means standby is active (not boolean — can be 1,2,3,4...)
-        // STATE=1 means "In Work", anything else (0,2,etc) means not actively mining
+        // Standby detection: SoftOFF is a STICKY counter — it does NOT reset when
+        // the miner wakes up! So SoftOFF>0 alone is NOT reliable.
+        // Must cross-check: if STATE=1 (In Work) AND GHSavg > 100 → miner is ACTIVE
+        // regardless of SoftOFF value. Only declare sleep if NOT actively hashing.
         int softoffVal = softoff.toInt();
         int stateVal = state.toInt();
         
-        if (softoffVal > 0) {
+        // If actively hashing (STATE=1 and real hashrate), it's NOT sleeping
+        // even if SoftOFF counter is > 0 (stale from previous standby)
+        bool activelyHashing = (stateVal == 1 && ghsVal > 100.0);
+        
+        if (softoffVal > 0 && !activelyHashing) {
             actualAvalonMode = "sleep";
-            Serial.print(" → SLEEP (SoftOFF="); Serial.print(softoffVal); Serial.println(", standby confirmed)");
+            Serial.print(" → SLEEP (SoftOFF="); Serial.print(softoffVal); Serial.println(", not hashing)");
         } else if (stateVal != 1 && ghsVal < 1.0) {
             actualAvalonMode = "sleep";
             Serial.print(" → SLEEP (STATE="); Serial.print(stateVal); Serial.println(", no hashrate)");
@@ -1527,12 +1532,13 @@ String getAvalonStatus(int idx) {
             if (ghsavg.length() > 0) ghsVal = ghsavg.toFloat();
             
             // Determine if miner is in standby
-            // SoftOFF > 0 means standby active (not boolean — can be 1,2,3,4...)
-            // STATE=1 means "In Work", anything else means not actively mining
+            // SoftOFF is STICKY — does NOT reset when miner wakes up!
+            // Must cross-check: STATE=1 + GHSavg > 100 = actively hashing (NOT sleeping)
             int softoffVal = softoff.toInt();
             int stateVal = state.toInt();
+            bool activelyHashing = (stateVal == 1 && ghsVal > 100.0);
             bool isStandby = false;
-            if (softoffVal > 0) isStandby = true;                    // SoftOFF flag > 0 = standby
+            if (softoffVal > 0 && !activelyHashing) isStandby = true; // SoftOFF set AND not hashing
             else if (stateVal != 1 && ghsVal < 1.0) isStandby = true; // STATE != 1 and no hashrate
             else if (summaryMHS < 1000 && ghsVal < 1.0) isStandby = true; // both hashrates near zero
             
