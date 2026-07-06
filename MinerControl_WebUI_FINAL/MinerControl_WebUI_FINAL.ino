@@ -64,8 +64,7 @@ bool   refossFound = false;
 
 // Intervals (ms)
 #define REFOSS_POLL_MS    30000
-#define SUPABASE_PUSH_MS  300000   // 5 min — push energy data + relay decisions (BitAxe/Octaxe ramp fast)
-#define AVALON_DECISION_MS 600000  // 10 min — Avalon Q needs ~5-8 min to ramp hashrate after mode change
+#define DECISION_CYCLE_MS 540000   // 9 min — single decision cycle for ALL miners (relays + Avalon)
 #define REFOSS_DISC_MS    60000
 #define AVALON_CMD_COOLDOWN_MS 30000  // 30s cooldown between Avalon commands to prevent rapid-fire conflicts
 
@@ -129,8 +128,7 @@ float aggSolar[MAX_SAMPLES], aggGrid[MAX_SAMPLES], aggHome[MAX_SAMPLES];
 int   aggCount = 0;
 
 unsigned long lastRefossPoll  = 0;
-unsigned long lastSupaPush    = 0;
-unsigned long lastAvalonDecision = 0;  // separate 10-min timer for Avalon Q decisions
+unsigned long lastDecision    = 0;
 unsigned long lastRefossDisc  = 0;
 unsigned long lastAvalonCmdTime = 0;   // cooldown: timestamp of last Avalon command sent
 bool refossDataValid = false;
@@ -304,25 +302,16 @@ void loop() {
         pollRefossEnergy();
     }
 
-    // Every 5 min: relay decisions + push to Supabase
-    if (refossDataValid && (now - lastSupaPush > SUPABASE_PUSH_MS)) {
-        lastSupaPush = now;
+    // Every 9 min: single decision cycle for ALL miners (relays + Avalon) + push to Supabase
+    if (refossDataValid && (now - lastDecision > DECISION_CYCLE_MS || lastDecision == 0)) {
+        lastDecision = now;
         
-        // Check if this is also a 10-min Avalon cycle
-        bool avalonCycle = (now - lastAvalonDecision > AVALON_DECISION_MS) || (lastAvalonDecision == 0);
+        runMiningDecision();              // decide new state based on solar surplus (all miners)
+        delay(2000);                      // let Avalon process any command before verifying
+        verifyMinerStates();              // verify the state was applied correctly
+        pushToSupabase();                 // push energy data
         
-        if (avalonCycle) {
-            lastAvalonDecision = now;
-            runMiningDecision(true);      // FIRST: decide new state based on surplus (may send Avalon commands)
-            delay(2000);                  // let Avalon process any command before verifying
-            verifyMinerStates();          // THEN: verify the NEW state was applied correctly
-            Serial.println(">> 10-min cycle: Avalon decision + verify");
-        } else {
-            runMiningDecision(false);     // relay-only decision: R1/R2 can change, Avalon stays
-            Serial.println(">> 5-min cycle: relay-only decision");
-        }
-        
-        pushToSupabase();                 // push energy data every 5 min
+        Serial.println(">> 9-min cycle: decision + verify + push");
     }
 
     delay(10);
@@ -383,8 +372,8 @@ void showWebUI() {
     // Supabase status
     gfx->setTextColor(0x07E0); // bright green
     gfx->setCursor(10, 100);
-    if (lastSupaPush > 0) {
-        unsigned long ago = (millis() - lastSupaPush) / 1000;
+    if (lastDecision > 0) {
+        unsigned long ago = (millis() - lastDecision) / 1000;
         gfx->print("Supabase: "); gfx->print(ago); gfx->print("s ago");
         gfx->print(" ("); gfx->print(aggCount); gfx->print(" samples)");
     } else {
@@ -1091,62 +1080,52 @@ void verifyMinerStates() {
 }
 
 // ==================== MINING DECISION ENGINE ====================
-// includeAvalon: true = full decision (relays + Avalon), false = relay-only (Avalon stays)
+// Single 9-min cycle: decides optimal profile for ALL miners (relays + Avalon)
+// Surplus = Solar - Home (independent of current mining load)
 
-void runMiningDecision(bool includeAvalon) {
+void runMiningDecision() {
     if (!autoMiningEnabled || !refossDataValid) return;
 
-    // Recency-weighted grid average: recent samples (last 5) count 2x
-    // This makes decisions react to current conditions, not stale data
-    float avgGrid = 0;
+    // Recency-weighted averages: recent samples (last 5) count 2x
+    float avgSolar = 0, avgHome = 0, avgGrid = 0;
     float totalWeight = 0;
     for (int s = 0; s < aggCount; s++) {
-        float weight = (s >= aggCount - 5) ? 2.0 : 1.0;  // last 5 samples get 2x weight
-        avgGrid += aggGrid[s] * weight;
+        float weight = (s >= aggCount - 5) ? 2.0 : 1.0;
+        avgSolar += aggSolar[s] * weight;
+        avgHome  += aggHome[s] * weight;
+        avgGrid  += aggGrid[s] * weight;
         totalWeight += weight;
     }
-    if (totalWeight > 0) avgGrid /= totalWeight;
+    if (totalWeight > 0) {
+        avgSolar /= totalWeight;
+        avgHome  /= totalWeight;
+        avgGrid  /= totalWeight;
+    }
 
-    // surplus = how much power we can use for mining
-    // grid negative = exporting = surplus available
-    // Add back current mining power since it's already in the grid reading
-    float surplus = -avgGrid + profiles[miningState].totalW;
+    // SOLAR-BASED SURPLUS: available power for mining = Solar - Home
+    // Solar CTs measure inverter output, Home CTs measure house consumption
+    // Mining loads are on separate circuits (not measured by either)
+    float available = avgSolar - avgHome;
+    float netSurplus = available - profiles[miningState].totalW;  // positive = room to grow
 
-    // Find the highest profile whose totalW fits UNDER the surplus
-    // If relay-only mode: only consider profiles with the SAME Avalon mode
-    const char* currentAvMode = profiles[miningState].avalonMode;
-    int targetState = -1;  // -1 = no match found yet
+    // Find the highest profile whose totalW fits UNDER available power
+    int targetState = -1;
     for (int i = NUM_PROFILES - 1; i >= 0; i--) {
-        if (profiles[i].totalW <= surplus) {
-            if (!includeAvalon && strcmp(profiles[i].avalonMode, currentAvMode) != 0) {
-                continue;  // skip profiles that would change Avalon mode
-            }
+        if (profiles[i].totalW <= available) {
             targetState = i;
             break;
         }
     }
     
-    // CRITICAL FIX: If relay-only mode found no matching profile, DO NOT fall to S0.
-    // This happens when surplus drops below the minimum profile for current Avalon mode
-    // (e.g., surplus=1443 but all "high" profiles need ≥1720W).
-    // Stay at current state and wait for the 10-min Avalon cycle to handle the mode change.
-    if (targetState < 0) {
-        if (!includeAvalon) {
-            // Relay-only: keep current state, don't touch Avalon
-            Serial.println("  Relay-only: no profile fits with current Avalon mode, keeping S" + String(miningState));
-            Serial.println("  (Will reassess Avalon mode at next 10-min cycle)");
-            Serial.println("========================\n");
-            return;
-        } else {
-            // Full decision: fall to S0 (OFF) — surplus too low for anything
-            targetState = 0;
-        }
-    }
+    // No profile fits — fall to S0 (OFF)
+    if (targetState < 0) targetState = 0;
 
     Serial.println("\n=== MINING DECISION ===");
-    Serial.print(includeAvalon ? "[FULL] " : "[RELAY-ONLY] ");
-    Serial.print("Avg Grid: "); Serial.print(avgGrid, 0);
-    Serial.print("W  Surplus: "); Serial.print(surplus, 0); Serial.println("W");
+    Serial.print("Solar: "); Serial.print(avgSolar, 0);
+    Serial.print("W  Home: "); Serial.print(avgHome, 0);
+    Serial.print("W  Available: "); Serial.print(available, 0);
+    Serial.print("W  Net: "); Serial.print(netSurplus, 0);
+    Serial.print("W  Grid: "); Serial.print(avgGrid, 0); Serial.println("W");
     Serial.print("Current: S"); Serial.print(miningState);
     Serial.print(" ("); Serial.print(profiles[miningState].name);
     Serial.print(")  Target: S"); Serial.print(targetState);
@@ -1210,7 +1189,7 @@ void runMiningDecision(bool includeAvalon) {
     // Log transition to Supabase
     String tj = "{\"old_id\":" + String(oldState) +
                 ",\"new_id\":" + String(targetState) +
-                ",\"surplus\":" + String(surplus, 1) +
+                ",\"surplus\":" + String(available, 1) +
                 ",\"grid\":" + String(avgGrid, 1) + "}";
     supabaseInsert("transitions", tj);
 
