@@ -1048,11 +1048,13 @@ void verifyMinerStates() {
         if (actualAvalonMode == "off") {
             Serial.println("  Avalon Q: unreachable, attempting wake...");
             controlAvalon(3, "wakeup");
-            delay(3000);
+            delay(5000);
+            lastAvalonCmdTime = 0;  // reset cooldown so workmode cmd isn't blocked
         } else if (actualAvalonMode == "sleep") {
             Serial.println("  Avalon Q: sleeping (CGMiner alive but not hashing), waking...");
             controlAvalon(3, "wakeup");
-            delay(3000);
+            delay(5000);
+            lastAvalonCmdTime = 0;  // reset cooldown so workmode cmd isn't blocked
         }
         String r = controlAvalon(3, expected.avalonMode);
         Serial.print("  Avalon Q: set "); Serial.print(expected.avalonMode);
@@ -1113,7 +1115,7 @@ void runMiningDecision(bool includeAvalon) {
     // Find the highest profile whose totalW fits UNDER the surplus
     // If relay-only mode: only consider profiles with the SAME Avalon mode
     const char* currentAvMode = profiles[miningState].avalonMode;
-    int targetState = 0;
+    int targetState = -1;  // -1 = no match found yet
     for (int i = NUM_PROFILES - 1; i >= 0; i--) {
         if (profiles[i].totalW <= surplus) {
             if (!includeAvalon && strcmp(profiles[i].avalonMode, currentAvMode) != 0) {
@@ -1121,6 +1123,23 @@ void runMiningDecision(bool includeAvalon) {
             }
             targetState = i;
             break;
+        }
+    }
+    
+    // CRITICAL FIX: If relay-only mode found no matching profile, DO NOT fall to S0.
+    // This happens when surplus drops below the minimum profile for current Avalon mode
+    // (e.g., surplus=1443 but all "high" profiles need ≥1720W).
+    // Stay at current state and wait for the 10-min Avalon cycle to handle the mode change.
+    if (targetState < 0) {
+        if (!includeAvalon) {
+            // Relay-only: keep current state, don't touch Avalon
+            Serial.println("  Relay-only: no profile fits with current Avalon mode, keeping S" + String(miningState));
+            Serial.println("  (Will reassess Avalon mode at next 10-min cycle)");
+            Serial.println("========================\n");
+            return;
+        } else {
+            // Full decision: fall to S0 (OFF) — surplus too low for anything
+            targetState = 0;
         }
     }
 
@@ -1177,7 +1196,8 @@ void runMiningDecision(bool includeAvalon) {
             if (strcmp(avNow, "off") == 0) {
                 String r = controlAvalon(3, "wakeup");
                 Serial.print("  Avalon Q: wake → "); Serial.println(r);
-                delay(2000);
+                delay(5000);  // wait for Avalon to process wakeup
+                lastAvalonCmdTime = 0;  // reset cooldown so workmode cmd isn't blocked
             }
             String r = controlAvalon(3, p.avalonMode);
             Serial.print("  Avalon Q: "); Serial.print(p.avalonMode);
