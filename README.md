@@ -78,6 +78,23 @@ The ESP32-S3 serves a real-time web dashboard accessible from any browser on the
 | Avalon Q Controls | Sleep/Wake/Low/Mid/High mode + Reboot |
 | Supabase Sync | Manual cloud sync + auto-push every 5 minutes |
 
+### 🌐 Three.js 3D Mining Dashboard
+
+A live interactive 3D visualization of the entire solar mining cluster is available at **[https://0xraphael.com/solar-mining-cluster](https://0xraphael.com/solar-mining-cluster)**. Built with Three.js, it renders the mining fleet, solar array, and energy flow in a fully navigable 3D scene.
+
+<table>
+<tr>
+<td><img src="Miner_solar_cluster_imgs/dashboard_pngs/minerfleet three js dashboard.png" width="280"/></td>
+<td><img src="Miner_solar_cluster_imgs/dashboard_pngs/threejs render solar maining dashboard.png" width="280"/></td>
+<td><img src="Miner_solar_cluster_imgs/dashboard_pngs/antpool iframe dashboard.png" width="280"/></td>
+</tr>
+<tr>
+<td align="center"><em>Miner fleet 3D overview</em></td>
+<td align="center"><em>Solar mining dashboard render</em></td>
+<td align="center"><em>Antpool iframe integration</em></td>
+</tr>
+</table>
+
 ---
 
 ## 🔧 Hardware
@@ -408,6 +425,7 @@ This prevents scenarios like the Avalon Q turning back on after a power outage w
 | [🖥️ Web UI](documentation/WEB_UI.md) | Browser interface layout, API endpoints, auto-refresh intervals |
 | [📋 Tasmota ESP32 Relay Setup](documentation/TASMOTA_ESP32_2X_RELAY_SETUP.md) | Complete GPIO mapping, configuration, HTTP API for the active ESP32 relay board |
 | [📋 Tasmota ESP12F Relay Setup](documentation/TASMOTA_ESP12F_2CH_SETUP.md) | Complete setup for the backup 30A ESP8266 relay board |
+| [🌐 3D Mining Dashboard](https://0xraphael.com/solar-mining-cluster) | Interactive Three.js 3D visualization of the solar mining cluster, miner fleet, and energy flow |
 
 ---
 
