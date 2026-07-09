@@ -78,6 +78,19 @@ The ESP32-S3 serves a real-time web dashboard accessible from any browser on the
 | Avalon Q Controls | Sleep/Wake/Low/Mid/High mode + Reboot |
 | Supabase Sync | Manual cloud sync + auto-push every 5 minutes |
 
+### 📱 ESP32 Web Dashboard (v4)
+
+<table>
+<tr>
+<td><img src="Miner_solar_cluster_imgs/dashboard_pngs/esp32_web_dashboard_v4_full.png" width="420"/></td>
+<td><img src="Miner_solar_cluster_imgs/dashboard_pngs/esp32_web_dashboard_v4_zoom.png" width="420"/></td>
+</tr>
+<tr>
+<td align="center"><em>Full dashboard view</em></td>
+<td align="center"><em>Dashboard detail zoom</em></td>
+</tr>
+</table>
+
 ### 🌐 Three.js 3D Mining Dashboard
 
 A live interactive 3D visualization of the entire solar mining cluster is available at **[https://0xraphael.com/solar-mining-cluster](https://0xraphael.com/solar-mining-cluster)**. Built with Three.js, it renders the mining fleet, solar array, and energy flow in a fully navigable 3D scene.

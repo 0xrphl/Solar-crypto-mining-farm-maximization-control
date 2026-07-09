@@ -95,7 +95,13 @@ All hardware photos, product screenshots, and installation images for the Solar 
 | ![Wire Stripper](Automatic%20Stripping%20Cutter%20Wire%20Stripper%20Pliers%20Cable%20Wire%20Crimping%20Electrician%20Aliexpress.png) | ![LAOA Pliers](LAOA%20Multifunctional%20Fast%20Fully%20Automatic%20Wire%20Stripping%20Pliers%20Cable%20Cutting%20Aliexpress.png) | ![Fan Guards](Cooling%20Fan%20Guard%20Metal%20Grill%20Computer%20Cover%20Fan%20Grill%2030mm%2040mm%2050mm%2060mm%2070mm%20Aliexpress.png) |
 | ![Screw Set](Stainless%20Steel%20M36%20Pan%20Head%20Screw%20Set%20228_300_360pcs.png) | ![USB-TTL AliExpress](3pcs_lot%20%3D1PCS%20PL2303HX%2B1PCS%20CP2102%2B1PCS%20CH340G%20USB%20TO%20TTL%20for%20arduino%20PL2303%20CP%20Aliexpress.png) | ![USB-TTL Front](3pcs_lot%20%3D1PCS%20PL2303HX%2B1PCS%20CP2102%2B1PCS%20CH340G%20USB%20TO%20TTL%20for%20arduino%20PL2303%20CP%20FRONT.jpeg) |
 
-## 🖼️ Dashboard Product Images
+## 🖥️ ESP32 Web Dashboard (v4)
+
+| | |
+|---|---|
+| ![Dashboard Full](dashboard_pngs/esp32_web_dashboard_v4_full.png) | ![Dashboard Zoom](dashboard_pngs/esp32_web_dashboard_v4_zoom.png) |
+
+## �️ Dashboard Product Images
 
 | | | | |
 |---|---|---|---|
