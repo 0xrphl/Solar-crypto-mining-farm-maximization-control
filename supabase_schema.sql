@@ -1,36 +1,66 @@
 -- ============================================================
--- Supabase Schema v3 — MINIMAL for free tier
+-- Supabase Schema v4 — Solar Mining Control
 -- solar-cluster (obzzoqghurezcytjzpgq)
 -- Run in Supabase SQL Editor
 --
--- Bi-phase: All three quantities directly measured
---   Solar = A1 + |B2|  (solar CT clamps)
---   Grid  = A2 + C2    (grid CT clamps, negative=exporting)
---   House = |B1| + |C1| (house CT clamps, incl. shower)
+-- SAFE TO RUN MULTIPLE TIMES:
+--   - CREATE TABLE IF NOT EXISTS (won't break existing tables)
+--   - ALTER TABLE ADD COLUMN IF NOT EXISTS (adds new v4 columns)
+--   - DROP VIEW + CREATE VIEW (recreates views cleanly)
+--   - INSERT ON CONFLICT DO NOTHING (won't duplicate profiles)
 --
--- Refoss EM06P reports ACTIVE power (W), not apparent (VA).
--- PF is reported separately. No PF multiplication needed.
+-- 2-Phase (Bi-Phase) Circuit:
+--   Phase 1 (A): Solar=A1, Grid=A2, Home=calculated (Solar+Grid)
+--   Phase 2 (B/C): Solar=B2, Grid=C2, Home=|B1|+|C1| (measured)
 --
--- ~288 rows/day × 16 cols × 4B ≈ 18 KB/day ≈ 550 KB/month
+-- Per-channel: Active W, Power Factor
+-- Per-phase: Solar/Grid/Home W breakdown
+-- System: Totals W + VA, Power Saved, Mining Profile
+--
+-- ~160 rows/day × 30 cols × 4B ≈ 19 KB/day ≈ 7 MB/year
+-- Free tier 500MB = ~70 years of data
 -- ============================================================
+
+-- ==================== ENERGY TABLE ====================
 
 CREATE TABLE IF NOT EXISTS energy (
     id   BIGSERIAL    PRIMARY KEY,
     ts   TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    a1_w REAL, a1_pf REAL,  -- Solar Phase A (ch1)
-    a2_w REAL, a2_pf REAL,  -- Grid Phase A (ch4)
-    b1_w REAL, b1_pf REAL,  -- House Phase B (ch2)
-    b2_w REAL, b2_pf REAL,  -- Solar Phase B (ch5)
-    c1_w REAL, c1_pf REAL,  -- Shower / House (ch3)
-    c2_w REAL, c2_pf REAL,  -- Grid Phase B (ch6)
-    solar REAL,              -- A1+|B2| (direct measurement)
-    grid  REAL,              -- A2+C2 (direct measurement, +=import, -=export)
-    home  REAL,              -- |B1|+|C1| (direct measurement)
-    n     INT                -- samples in avg
+
+    -- Per-channel: active power (W) and power factor
+    a1_w REAL, a1_pf REAL,  -- Solar Phase 1 (ch1)
+    a2_w REAL, a2_pf REAL,  -- Grid Phase 1 (ch4)
+    b1_w REAL, b1_pf REAL,  -- House Phase 2 (ch2)
+    b2_w REAL, b2_pf REAL,  -- Solar Phase 2 (ch5)
+    c1_w REAL, c1_pf REAL,  -- Shower / House load (ch3)
+    c2_w REAL, c2_pf REAL,  -- Grid Phase 2 (ch6)
+
+    -- System totals: active power (W)
+    solar REAL,              -- |A1| + |B2| (total solar generation)
+    grid  REAL,              -- A2 + C2 (signed: +=import, -=export)
+    home  REAL,              -- Phase1(calc) + Phase2(meas) total consumption
+
+    -- Aggregation metadata
+    n     INT                -- Number of 30s samples in this average
 );
 CREATE INDEX IF NOT EXISTS idx_energy_ts ON energy (ts DESC);
 
--- 16 mining profiles (reference/lookup)
+-- v4 columns: add if upgrading from v3 (safe to run on fresh installs too)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS solar_p1 REAL;   -- Phase 1 solar W (|A1|)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS solar_p2 REAL;   -- Phase 2 solar W (|B2|)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS grid_p1 REAL;    -- Phase 1 grid W (A2, signed)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS grid_p2 REAL;    -- Phase 2 grid W (C2, signed)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS home_p1 REAL;    -- Phase 1 home W (calculated: solar+grid)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS home_p2 REAL;    -- Phase 2 home W (measured: |B1|+|C1|)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS solar_va REAL;   -- Total solar apparent VA
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS grid_va REAL;    -- Total grid apparent VA
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS home_va REAL;    -- Total home apparent VA
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS saved_w REAL;    -- Active surplus: solar - home (W)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS saved_va REAL;   -- Apparent surplus: solar_va - home_va (VA)
+ALTER TABLE energy ADD COLUMN IF NOT EXISTS profile_id INT;  -- Mining profile active at snapshot (0-15)
+
+-- ==================== PROFILES TABLE ====================
+
 CREATE TABLE IF NOT EXISTS profiles (
     id   INT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -58,8 +88,8 @@ INSERT INTO profiles VALUES
     (15, 'AV_HI+BN+OCT',   2001, true,  true,  'high')
 ON CONFLICT (id) DO NOTHING;
 
--- Mining state transitions log (only when state changes)
--- When old_id == new_id, it's a CORRECTION (power outage recovery)
+-- ==================== TRANSITIONS TABLE ====================
+
 CREATE TABLE IF NOT EXISTS transitions (
     id      BIGSERIAL    PRIMARY KEY,
     ts      TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -70,6 +100,8 @@ CREATE TABLE IF NOT EXISTS transitions (
 );
 CREATE INDEX IF NOT EXISTS idx_trans_ts ON transitions (ts DESC);
 
+-- ==================== CONFIG TABLE ====================
+
 CREATE TABLE IF NOT EXISTS config (
     key TEXT PRIMARY KEY, value JSONB NOT NULL
 );
@@ -79,33 +111,93 @@ INSERT INTO config (key, value) VALUES
     ('auto', '{"enabled":true}')
 ON CONFLICT (key) DO NOTHING;
 
+-- ==================== ROW LEVEL SECURITY ====================
+
 ALTER TABLE energy ENABLE ROW LEVEL SECURITY;
 ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE config ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "e_ins" ON energy FOR INSERT WITH CHECK (true);
-CREATE POLICY "e_sel" ON energy FOR SELECT USING (true);
-CREATE POLICY "p_sel" ON profiles FOR SELECT USING (true);
-CREATE POLICY "t_ins" ON transitions FOR INSERT WITH CHECK (true);
-CREATE POLICY "t_sel" ON transitions FOR SELECT USING (true);
-CREATE POLICY "c_sel" ON config FOR SELECT USING (true);
-CREATE POLICY "c_upd" ON config FOR UPDATE USING (true) WITH CHECK (true);
 
-CREATE OR REPLACE VIEW latest AS
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'e_ins') THEN
+        CREATE POLICY "e_ins" ON energy FOR INSERT WITH CHECK (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'e_sel') THEN
+        CREATE POLICY "e_sel" ON energy FOR SELECT USING (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'p_sel') THEN
+        CREATE POLICY "p_sel" ON profiles FOR SELECT USING (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 't_ins') THEN
+        CREATE POLICY "t_ins" ON transitions FOR INSERT WITH CHECK (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 't_sel') THEN
+        CREATE POLICY "t_sel" ON transitions FOR SELECT USING (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'c_sel') THEN
+        CREATE POLICY "c_sel" ON config FOR SELECT USING (true);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'c_upd') THEN
+        CREATE POLICY "c_upd" ON config FOR UPDATE USING (true) WITH CHECK (true);
+    END IF;
+END $$;
+
+-- ==================== VIEWS ====================
+-- Drop first to avoid column-rename conflicts on upgrades
+
+DROP VIEW IF EXISTS latest CASCADE;
+DROP VIEW IF EXISTS hourly CASCADE;
+DROP VIEW IF EXISTS daily CASCADE;
+DROP VIEW IF EXISTS daily_phases CASCADE;
+DROP VIEW IF EXISTS profile_usage CASCADE;
+
+-- Latest reading
+CREATE VIEW latest AS
 SELECT * FROM energy ORDER BY ts DESC LIMIT 1;
 
-CREATE OR REPLACE VIEW hourly AS
-SELECT date_trunc('hour',ts) AS h,
-  round(avg(solar)::numeric,0) AS solar,
-  round(avg(grid)::numeric,0)  AS grid,
-  round(avg(home)::numeric,0)  AS home,
+-- Hourly averages (W + VA)
+CREATE VIEW hourly AS
+SELECT date_trunc('hour', ts) AS h,
+  round(avg(solar)::numeric, 0) AS solar,
+  round(avg(grid)::numeric, 0)  AS grid,
+  round(avg(home)::numeric, 0)  AS home,
+  round(avg(saved_w)::numeric, 0) AS saved,
+  round(avg(solar_va)::numeric, 0) AS solar_va,
+  round(avg(grid_va)::numeric, 0)  AS grid_va,
+  round(avg(home_va)::numeric, 0)  AS home_va,
   count(*) AS n
 FROM energy GROUP BY 1 ORDER BY 1 DESC;
 
-CREATE OR REPLACE VIEW daily AS
-SELECT date_trunc('day',ts) AS d,
-  round(avg(solar)::numeric,0) AS solar,
-  round(avg(grid)::numeric,0)  AS grid,
-  round(avg(home)::numeric,0)  AS home,
+-- Daily averages
+CREATE VIEW daily AS
+SELECT date_trunc('day', ts) AS d,
+  round(avg(solar)::numeric, 0) AS solar,
+  round(avg(grid)::numeric, 0)  AS grid,
+  round(avg(home)::numeric, 0)  AS home,
+  round(avg(saved_w)::numeric, 0) AS saved,
+  round(avg(solar_va)::numeric, 0) AS solar_va,
   count(*) AS n
 FROM energy GROUP BY 1 ORDER BY 1 DESC;
+
+-- Per-phase daily averages
+CREATE VIEW daily_phases AS
+SELECT date_trunc('day', ts) AS d,
+  round(avg(solar_p1)::numeric, 0) AS solar_p1,
+  round(avg(solar_p2)::numeric, 0) AS solar_p2,
+  round(avg(grid_p1)::numeric, 0)  AS grid_p1,
+  round(avg(grid_p2)::numeric, 0)  AS grid_p2,
+  round(avg(home_p1)::numeric, 0)  AS home_p1,
+  round(avg(home_p2)::numeric, 0)  AS home_p2,
+  count(*) AS n
+FROM energy GROUP BY 1 ORDER BY 1 DESC;
+
+-- Mining profile usage: how long each profile was active
+CREATE VIEW profile_usage AS
+SELECT profile_id, p.name, p.w AS watts,
+  count(*) AS readings,
+  round(count(*) * 9.0 / 60, 1) AS hours_approx
+FROM energy e
+JOIN profiles p ON e.profile_id = p.id
+WHERE profile_id IS NOT NULL
+GROUP BY profile_id, p.name, p.w
+ORDER BY profile_id;

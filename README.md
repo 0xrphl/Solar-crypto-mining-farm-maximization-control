@@ -425,6 +425,7 @@ This prevents scenarios like the Avalon Q turning back on after a power outage w
 | [🖥️ Web UI](documentation/WEB_UI.md) | Browser interface layout, API endpoints, auto-refresh intervals |
 | [📋 Tasmota ESP32 Relay Setup](documentation/TASMOTA_ESP32_2X_RELAY_SETUP.md) | Complete GPIO mapping, configuration, HTTP API for the active ESP32 relay board |
 | [📋 Tasmota ESP12F Relay Setup](documentation/TASMOTA_ESP12F_2CH_SETUP.md) | Complete setup for the backup 30A ESP8266 relay board |
+| [⚡ 2-Phase Power Model](documentation/POWER_MODEL.md) | Phasorial analysis, per-phase W/VA/VAR equations, power triangle, worked examples, sign conventions |
 | [🌐 3D Mining Dashboard](https://0xraphael.com/solar-mining-cluster) | Interactive Three.js 3D visualization of the solar mining cluster, miner fleet, and energy flow |
 
 ---
@@ -433,20 +434,28 @@ This prevents scenarios like the Avalon Q turning back on after a power outage w
 
 ```
 ├── MinerControl_WebUI_FINAL/
-│   ├── MinerControl_WebUI_FINAL.ino    ← Main Arduino sketch (1500+ lines)
+│   ├── MinerControl_WebUI_FINAL.ino    ← Main file: setup/loop + globals
+│   ├── config.h                        ← Structs, constants, mining profiles
 │   ├── credentials.h.example           ← Template for credentials (copy → credentials.h)
-│   └── credentials.h                   ← Your real credentials (gitignored)
+│   ├── credentials.h                   ← Your real credentials (gitignored)
+│   ├── display.ino                     ← TFT display functions (ST7789)
+│   ├── energy.ino                      ← Per-phase W/VA/VAR calculations
+│   ├── mining.ino                      ← Decision engine + state verification
+│   ├── refoss.ino                      ← EM06P discovery + polling + parsing
+│   ├── relay_control.ino               ← Tasmota relay + BitAxe + Avalon control
+│   ├── supabase.ino                    ← Supabase REST API push (W/VA/VAR)
+│   └── web_ui.ino                      ← Web server handlers + HTML/CSS/JS
 ├── documentation/
 │   ├── SYSTEM_OVERVIEW.md              ← Architecture + hardware + decision engine
 │   ├── SETUP_AND_CONFIG.md             ← Arduino IDE + Tasmota + network setup
 │   ├── DATABASE.md                     ← Supabase schema + queries
-│   └── WEB_UI.md                       ← Dashboard interface + API
+│   ├── WEB_UI.md                       ← Dashboard interface + API
+│   ├── POWER_MODEL.md                  ← 2-phase phasorial analysis + equations
+│   ├── TASMOTA_ESP32_2X_RELAY_SETUP.md ← Active relay board documentation
+│   └── TASMOTA_ESP12F_2CH_SETUP.md     ← Backup relay board documentation
 ├── diagrams/                           ← 10 SVG architecture diagrams
 ├── Miner_solar_cluster_imgs/           ← 60+ project photos
 │   └── dashboard_pngs/                 ← Miner product images
-├── documentation/
-│   ├── TASMOTA_ESP32_2X_RELAY_SETUP.md ← Active relay board documentation
-│   └── TASMOTA_ESP12F_2CH_SETUP.md     ← Backup relay board documentation
 ├── supabase_schema.sql                 ← Database schema
 ├── .gitignore                          ← Excludes credentials.h, .env
 └── README.md                           ← This file
@@ -534,6 +543,62 @@ This prevents scenarios like the Avalon Q turning back on after a power outage w
 
 ---
 
+## ⚡ 2-Phase Power Model (W / VA / VAR)
+
+The system uses a **2-phase (split-phase)** circuit with 6 CT clamps. Each phase is calculated **independently** using scalar math — no cross-phase vector/phasor addition.
+
+> 📄 **Full documentation:** [`documentation/POWER_MODEL.md`](documentation/POWER_MODEL.md)
+
+### Circuit Layout
+
+```
+  Phase 1 (A):  A1=Solar ──┬── A2=Grid ──┬── Home (CALCULATED: Solar+Grid)
+                            │             │
+  Phase 2 (B/C): B2=Solar ─┼── C2=Grid ──┼── B1=House + C1=Shower (MEASURED)
+                            │             │
+                     ⛏️ Mining loads (separate circuits, relay-controlled)
+```
+
+### Per-Channel Power Triangle
+
+```
+  VA = |W| / |PF|          Apparent power (what the wires carry)
+  VAR = √(VA² − W²)        Reactive power (magnetic/capacitive)
+
+  Example:  A2_Grid: −718.4W, PF=−0.67
+            VA  = 718.4/0.67 = 1072 VA
+            VAR = √(1072²−718²) = 796 VAR
+```
+
+### Key Equations
+
+| Quantity | Phase 1 | Phase 2 |
+|:---|:---|:---|
+| **Solar** | \|A1\| (measured) | \|B2\| (measured) |
+| **Grid** | A2 signed (measured) | C2 signed (measured) |
+| **Home** | Solar + Grid (**calculated**) | \|B1\| + \|C1\| (**measured**) |
+
+**System totals** = Phase 1 + Phase 2 (scalar sum)
+
+**Power Saved** (mining surplus):
+```
+  Saved_W  = Total_Solar_W  − Total_Home_W
+  Saved_VA = Total_Solar_VA − Total_Home_VA
+```
+
+### Worked Example
+
+| | Solar | Grid | Home | **Saved** |
+|:---|---:|---:|---:|---:|
+| **Phase 1** | 1609 W | −718 W | 891 W (calc) | |
+| **Phase 2** | 1499 W | −652 W | 844 W (meas) | |
+| **Total W** | **3108 W** | **−1370 W** | **1735 W** | **1373 W** |
+| **Total VA** | **3594 VA** | **2350 VA** | **1577 VA** | **2017 VA** |
+
+→ Mining decision selects **S7: AV_LO+BN+OCT (1061W)** — the highest profile fitting under 1373W surplus.
+
+---
+
 ## 🔐 Security
 
 - **`credentials.h`** (real passwords) is **gitignored** — never committed
@@ -554,3 +619,57 @@ Open source. Built for the Bitcoin mining community. ⛏️☀️
   <strong>Solar-powered. Autonomous. Profitable.</strong><br/>
   <em>Built with ESP32-S3, Refoss EM06P, Tasmota, Supabase, and 12 solar panels.</em>
 </p>
+
+---
+
+## 📋 Changelog
+
+### v4.0 — 2026-07-09
+
+#### 🏗️ Code Architecture: Multi-file Split
+- Split monolithic `MinerControl_WebUI_FINAL.ino` (~2000 lines) into **9 modular files**:
+  - `config.h` — structs, constants, 16 mining profiles, miner definitions
+  - `credentials.h` — WiFi/Tasmota/Supabase/Refoss secrets (gitignored)
+  - `display.ino` — TFT display functions
+  - `refoss.ino` — Refoss EMO6P mDNS discovery + HTTP polling + JSON parsing
+  - `energy.ino` — Per-phase energy calculations (W/VA/VAR) + aggregation buffer
+  - `mining.ino` — Mining decision engine + state verification + corrections
+  - `supabase.ino` — Supabase REST API push (energy + transitions)
+  - `relay_control.ino` — Tasmota relay + BitAxe + Avalon Q CGMiner control
+  - `web_ui.ino` — Web server handlers + full HTML/CSS/JS dashboard
+
+#### ⚡ Energy Model: Per-Phase + Apparent Power (VA/VAR)
+- Added **per-phase scalar power calculations** for 2-phase (bi-phase) circuit:
+  - Phase 1: Solar=|A1|, Grid=A2 (signed), Home=calculated (Solar+Grid, floor 0)
+  - Phase 2: Solar=|B2|, Grid=C2 (signed), Home=|B1|+|C1| (directly measured)
+- Added **apparent power (VA)** per channel: `VA = V × I` (always positive)
+- Added **reactive power (VAR)** per channel: `VAR = √(VA² - W²)`
+- System totals: `liveSolarVA`, `liveGridVA`, `liveHomeVA`, `liveSolarVAR`, `liveGridVAR`, `liveHomeVAR`
+- Power saved (surplus): both active W and apparent VA
+- New documentation: `documentation/POWER_MODEL.md` — full sign conventions, formulas, flow diagrams
+
+#### 🧠 Mining Decision: Grid-Based Formula with Measured Power
+- **Fixed critical bug:** Old formula `available = Solar - Home` underestimated surplus because `Home_P1` (calculated from Solar+Grid) already included mining consumption. This caused unnecessary profile downgrades and oscillation.
+- **New formula:** `available = -avgGrid + measuredMiningW - 50W`
+  - Uses actual measured power from miners (Avalon MPO from `estats` + BitAxe `/api/system/info`)
+  - Falls back to rated profile wattage only when measured data unavailable
+  - 50W safety margin prevents oscillation at profile boundaries
+- **Ramp-up aware:** During Avalon boot (2-5 min), measured MPO is lower than rated → naturally conservative profile selection
+
+#### 🔧 Avalon Q: Deferred Workmode After Boot
+- After waking Avalon from sleep/off, workmode command is now **deferred** instead of sent immediately
+- `checkPendingAvalonMode()` retries every 30s (up to 5 attempts) until Avalon accepts the mode
+- Cooldown timer reset before corrections so commands aren't blocked
+- Prevents the "Error: Invalid command" issue when setting workmode on a still-booting Avalon
+
+#### 🗄️ Supabase Schema v4
+- **12 new columns** in `energy` table (backwards-compatible, uses `ALTER TABLE ADD COLUMN IF NOT EXISTS`):
+  - Per-phase breakdown: `solar_p1`, `solar_p2`, `grid_p1`, `grid_p2`, `home_p1`, `home_p2`
+  - Apparent power: `solar_va`, `grid_va`, `home_va`
+  - Surplus: `saved_w`, `saved_va`
+  - Mining state: `profile_id`
+- **4 new views:** `hourly` (W+VA), `daily` (with saved), `daily_phases`, `profile_usage`
+- Single idempotent `supabase_schema.sql` — safe to run on fresh installs AND upgrades
+- RLS policies wrapped in `DO $$ IF NOT EXISTS` block for re-run safety
+- Removed separate migration file — everything in one schema file
+- Updated `documentation/DATABASE.md` with v4 ER diagram, column details, dashboard queries
